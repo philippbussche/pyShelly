@@ -13,13 +13,16 @@ from datetime import datetime, timedelta
 from .compat import s, uc, urlencode
 from .const import LOGGER
 
+import prometheus_client
+import sys
+
 try:
     import http.client as httplib
 except:
     import httplib
 
 class Cloud():
-    def __init__(self, root, server, key):
+    def __init__(self, root, server, key, prometheus_port):
         self.auth_key = key
         self.server = server.replace("https://", "").replace("Server: ","")
         self._last_update = None
@@ -31,6 +34,30 @@ class Cloud():
         self._root = root
         self.http_lock = threading.Lock()
         self.stopped = False
+        self._prometheus_port = prometheus_port
+        self._prometheus_server = None
+        self._prometheus_metric_power_actual = None
+        self._prometheus_metric_power_counter = None
+
+    def __init_metrics(self):
+        namespace = 'shelly'
+        labelnames = ['room', 'device_label', 'device_type']
+        
+        if self._prometheus_metric_power_actual is None:
+            self._prometheus_metric_power_actual = prometheus_client.Gauge(
+                name='power_actual',
+                documentation='Current real AC power being drawn (or injected), in Watts',
+                labelnames=labelnames,
+                namespace=namespace
+            )
+
+        if self._prometheus_metric_power_counter is None:
+            self._prometheus_metric_power_counter = prometheus_client.Gauge(
+                name='power_counter',
+                documentation='Total real AC power being drawn (or injected), in Watt Hours',
+                labelnames=labelnames,
+                namespace=namespace
+            )
 
     def start(self, cleanCache):
         if cleanCache:
@@ -39,6 +66,14 @@ class Cloud():
         self._cloud_thread.name = "S4H-Cloud"
         self._cloud_thread.daemon = True
         self._cloud_thread.start()
+        self.__init_metrics()
+        try:
+            self._prometheus_server = prometheus_client.start_http_server(int(self._prometheus_port))
+        except Exception as e:
+            LOGGER.fatal(
+                "starting the http server on port '{}' failed with: {}".format(self._prometheus_port, str(e))
+            )
+            sys.exit(1)
 
     def stop(self):
        self.stopped = True
@@ -72,6 +107,8 @@ class Cloud():
                         {'device_list' : self._device_list,
                          'room_list' : self._room_list}
                     )
+                    
+                    self.collect()
                 else:
                     self._root.stopped.wait(5)
             except Exception as ex:
@@ -184,3 +221,33 @@ class Cloud():
     def get_room_list(self):
         resp = self._post("interface/room/list")
         return resp['data']['rooms'] if resp else None
+
+    def get_device_status(self, _id):
+        """Return status data for a device"""
+        resp = self._post("device/status", { "id": _id })
+        # return resp['data']['device_status']['meters'][0] if resp else None
+        return resp['data']['device_status'] if resp else None
+
+    def collect(self):
+        """Collect metrics"""
+        try:
+            devices = self._device_list
+            for id in devices:
+                status = self.get_device_status(id)
+                if meters:=status.get("meters"):
+                    meter = meters[0]
+                    power = meter.get("power")
+                    total = meter.get("total")
+                    room_name = self.get_room_name(id)
+                    if power is not None:
+                        print("Collecting Shelly power metrics (actual).")
+                        self._prometheus_metric_power_actual.labels(room=room_name, device_label=devices[id]["name"], device_type=devices[id]["type"]).set(power)
+                    if total is not None:
+                        print("Collecting Shelly power metrics (counter).")
+                        self._prometheus_metric_power_counter.labels(room=room_name, device_label=devices[id]["name"], device_type=devices[id]["type"]).set(float(total)/60)
+        except Exception as e:
+            LOGGER.warning(
+                "collecting status from device(s) failed with: {1}".format(str(e))
+            )
+        finally:
+            LOGGER.info('waiting {}s before next collection cycle'.format(self.update_interval))

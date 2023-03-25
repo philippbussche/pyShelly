@@ -91,12 +91,14 @@ class pyShelly():
         self._update_thread = None
         self._socket = None
         self.only_device_id = None
-        self.tmpl_name = "{room} - {name}"
-
+        # self.tmpl_name = "{room} - {name}"
+        self.tmpl_name = "{name}"
+        
         self.cloud = None
         self.cloud_server = None
         self.cloud_auth_key = None
-
+        self.cloud_prometheus_port = None
+    
         self._coap = CoAP(self)
         self._mdns = None
         self._mqtt_server = MQTT_server(self)
@@ -161,22 +163,23 @@ class pyShelly():
         if self.cb_save_cache:
             self.cb_save_cache(name, data)
 
-    def set_cloud_settings(self, server, key, _firstTime=False):
-        if self.cloud_auth_key==key and self.cloud_server==server and not _firstTime:
+    def set_cloud_settings(self, server, key, prometheus_port, _firstTime=False):
+        if self.cloud_auth_key==key and self.cloud_server==server and self.cloud_prometheus_port==prometheus_port and not _firstTime:
             return
         if self.cloud:
             self.cloud.stop()
             self.cloud=None
-        if server and key:
-            self.cloud = Cloud(self, server, key)
+        if server and key and prometheus_port:
+            self.cloud = Cloud(self, server, key, prometheus_port)
             self.cloud.start(not _firstTime)
         self.cloud_server = server
         self.cloud_auth_key = key
+        self.cloud_prometheus_port = prometheus_port
 
     def start(self):
         if self.mdns_enabled:
             self._mdns = MDns(self, self.zeroconf)
-        self.set_cloud_settings(self.cloud_server, self.cloud_auth_key, True)
+        # self.set_cloud_settings(self.cloud_server, self.cloud_auth_key, self.cloud_prometheus_port, self.cloud_prometheus_collect_interval_seconds, True)
         if self._coap:
             self._coap.start()
         if self._mdns:
